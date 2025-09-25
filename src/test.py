@@ -47,11 +47,11 @@ def train_branchnet(inputs):
             train_set= "../data/low_pressure_ratio/training_dataset.mat"
             test_set= "../data/low_pressure_ratio/testing_dataset.mat"
 
-    d = io.loadmat(train_set)#x坐标点，u原始变量的样本，v压力值样本
-    x_train, u_train, v_train, w_train = jnp.array(d['x']), jnp.array(d['utrain']), jnp.array(d['vtrain']), jnp.array(d['wtrain'])
+    d = io.loadmat(train_set)
+    x_train, u_train, v_train = jnp.array(d['x']), jnp.array(d['utrain']), jnp.array(d['vtrain'])
 
     d = io.loadmat(test_set)
-    x_test, u_test, v_test, w_test = jnp.array(d['x']), jnp.array(d['utest']), jnp.array(d['vtest']), jnp.array(d['wtest'])
+    x_test, u_test, v_test = jnp.array(d['x']), jnp.array(d['utest']), jnp.array(d['vtest'])
 
     if Problem == "HPR":
         u_train = u_train.at[:,:,0].set(jnp.log(u_train[:,:,0]))
@@ -61,12 +61,8 @@ def train_branchnet(inputs):
         u_test = u_test.at[:,:,2].set(jnp.log(u_test[:,:,2]))
 
 
-    Xmin1 = np.min(v_train)#pl上下界
-    Xmax1 = np.max(v_train)
-
-    Xmin2 = np.min(w_train)#rhol上下界
-    Xmax2 = np.max(w_train)
-
+    Xmin = np.min(v_train)
+    Xmax = np.max(v_train)
 
     dmin = np.zeros((1,1,3))
     dmax = np.zeros((1,1,3))
@@ -85,16 +81,14 @@ def train_branchnet(inputs):
         u_train = (u_train - dmin)/(dmax - dmin)
         u_test = (u_test- dmin)/(dmax - dmin)
         tol = (fac-dmin)/(dmax - dmin)
-        v_train = (v_train - Xmin1)/(Xmax1 - Xmin1) 
-        v_test = (v_test- Xmin1)/(Xmax1 - Xmin1) 
-        w_train = (w_train - Xmin2)/(Xmax2 - Xmin2)
-        w_test = (w_test - Xmin2)/(Xmax2 - Xmin2)
+        v_train = (v_train - Xmin)/(Xmax - Xmin) 
+        v_test = (v_test- Xmin)/(Xmax - Xmin) 
     else:
         u_train = 2*(u_train - dmin)/(dmax - dmin) - oness
         u_test = 2*(u_test- dmin)/(dmax - dmin) - oness
         tol = 2*(fac-dmin)/(dmax - dmin) - oness
-        v_train = 2.*(v_train - Xmin1)/(Xmax1 - Xmin1) - 1.0
-        v_test = 2.*(v_test- Xmin1)/(Xmax1 - Xmin1) - 1.0
+        v_train = 2.*(v_train - Xmin)/(Xmax - Xmin) - 1.0
+        v_test = 2.*(v_test- Xmin)/(Xmax - Xmin) - 1.0
 
 ##########################################
     def save_model(param,n,k):
@@ -191,29 +185,17 @@ def train_branchnet(inputs):
         W_branch.append(w1)
         b_branch.append(b1)
             
-    # key2 = random.PRNGKey(4321)
-    # keys2 = random.split(key2, num=nt)
-
-    # print("keysss2=\t",keys2)
-    a_branch2, c_branch2, a1_branch2, F1_branch2 , c1_branch2 = hyper_initial_frequencies(layers_f)
-    W_branch2, b_branch2 = [], []
-
-    for i in range(nt):
-        w2, b2 = hyper_initial_WB(layers_f,keys[i])
-        W_branch2.append(w2)
-        b_branch2.append(b2)
-
 
     def predict1(params, data):
         Am, W_trunk, b_trunk,a_trunk, c_trunk,a1_trunk, F1_trunk, c1_trunk = params
-        v, w, x = data
+        v, x = data
         Am = jnp.reshape(Am,(-1,G_dim,3))
         u_out_trunk = fnn_T(x, W_trunk, b_trunk, a_trunk, c_trunk, a1_trunk, F1_trunk , c1_trunk)
         return u_out_trunk,Am
 
     def predictT(params, data):#trunk网络预测结果 U_pred = T*A
         Am, W_trunk, b_trunk,a_trunk, c_trunk,a1_trunk, F1_trunk, c1_trunk = params
-        v, w, x = data
+        v, x = data
         Am = jnp.reshape(Am,(-1,G_dim,3))
         u_out_trunk = fnn_T(x, W_trunk, b_trunk, a_trunk, c_trunk, a1_trunk, F1_trunk , c1_trunk)
         u_pred = jnp.einsum('imn,jm->ijn',Am, u_out_trunk) # matmul
@@ -245,7 +227,7 @@ def train_branchnet(inputs):
 
         return model
     foldert = './'+foldert+'/'
-    modelt = choose_trunk_model(foldert,[v_train, w_train, x_train],u_train, tol)
+    modelt = choose_trunk_model(foldert,[v_train, x_train],u_train, tol)
     print("modelt=\t",modelt)
 
     i=0
@@ -258,7 +240,7 @@ def train_branchnet(inputs):
     u_train1 = []
     Rm = []
     for i in range(nt):
-        phi , Am = predict1(paramst[i],[v_train, w_train, x_train])#T和A
+        phi , Am = predict1(paramst[i],[v_train, x_train])#T和A
         if decomposition == "SVD":#矩阵分解
             Q,Sd,Vd = jnp.linalg.svd(phi, full_matrices=False)
             R = jnp.matmul(jnp.diag(Sd),Vd)
@@ -277,17 +259,11 @@ def train_branchnet(inputs):
 ################################################
 
     def predict(params, data, tol):
-        params1, params2 = params
-        W_branch,b_branch,a_branch, c_branch, a1_branch, F1_branch , c1_branch = params1
-        W_branch2,b_branch2,a_branch2, c_branch2, a1_branch2, F1_branch2 , c1_branch2 = params2
-        v, w, x = data
+        W_branch,b_branch,a_branch, c_branch, a1_branch, F1_branch , c1_branch = params
+        v, x = data
         u_out_branch = fnn_B(v, W_branch, b_branch,a_branch, c_branch, a1_branch, F1_branch , c1_branch)
-        u_out_branch2 = fnn_B(w, W_branch2, b_branch2,a_branch2, c_branch2, a1_branch2, F1_branch2, c1_branch2)
-
         u_pred = jnp.reshape(u_out_branch,(-1,G_dim,3))#N x G_dim x 3
-        u_pred2 = jnp.reshape(u_out_branch2,(-1,G_dim,3))#N x G_dim x 3
-
-        return u_pred*u_pred2
+        return u_pred
 
 
     def loss(params, data, u , tol):
@@ -305,16 +281,15 @@ def train_branchnet(inputs):
 
     opt_init, opt_update, get_params = optimizers.adam(lr)
 
-    
 
     opt_state = []
     for i in range(nt):
-        opt_state.append(opt_init([[W_branch[i], b_branch[i], a_branch, c_branch, a1_branch, F1_branch , c1_branch], \
-                                   [W_branch2[i], b_branch2[i], a_branch2, c_branch2, a1_branch2, F1_branch2 , c1_branch2]]))
+        opt_state.append(opt_init([W_branch[i], b_branch[i], a_branch, c_branch, a1_branch, F1_branch , c1_branch]))
 
     params = []
     for i in range(nt):
         params.append(get_params(opt_state[i]))
+
 
 
     train_loss, test_loss = [], []
@@ -327,7 +302,7 @@ def train_branchnet(inputs):
     
     for epoch in range(num_epochs):
         for i in range(nt):
-            params[i], opt_state[i], loss_val = update(params[i], [v_train, w_train, x_train], u_train1[i], opt_state[i], tol)
+            params[i], opt_state[i], loss_val = update(params[i], [v_train, x_train], u_train1[i], opt_state[i], tol)
         if epoch % FSM == 0:
             for i in range(nt):
                 save_model(params[i],n,i+1)
@@ -335,10 +310,10 @@ def train_branchnet(inputs):
         if epoch % FRL ==0:
             for i in range(nt):
                 epoch_time = time.time() - start_time
-                u_train_pred = predict(params[i], [v_train, w_train, x_train], tol)
+                u_train_pred = predict(params[i], [v_train, x_train], tol)
                 err_train = jnp.mean(jnp.linalg.norm(u_train1[i] - u_train_pred, 2, axis=1)/\
                     np.linalg.norm(u_train1[i] , 2, axis=1))
-                l1 = loss(params[i], [v_train, w_train, x_train], u_train1[i], tol)
+                l1 = loss(params[i], [v_train, x_train], u_train1[i], tol)
                 train_loss.append(l1) 
                 print("Epoch {} | T: {:0.6f} | Branch {} | Train MSE: {:0.3e} | Train L2: {:0.6f}".format(epoch, epoch_time, i,\
                                                                     l1, err_train))

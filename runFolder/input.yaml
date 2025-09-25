@@ -1,7 +1,7 @@
 --- # Input file to setup parameters for two-step RiemannONet
-Problem: HPR # HPR: High pressure ratio, IPR: Intermediate pressure ratio, LPR: Low pressure ratio
+Problem: IPR # HPR: High pressure ratio, IPR: Intermediate pressure ratio, LPR: Low pressure ratio
 Epochs:  # number of epoch for training
-  Trunk: 1000000
+  Trunk: 500000
   Branch: 1000000
 learning_rate: 1.0e-3
 Data_scaling: '01'

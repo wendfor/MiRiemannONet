@@ -56,11 +56,11 @@ def infer_solution(inputs):
             train_set= "../data/low_pressure_ratio/training_dataset.mat"
             test_set= "../data/low_pressure_ratio/testing_dataset.mat"
 
-    d = io.loadmat(train_set)
-    x_train, u_train, v_train = jnp.array(d['x']), jnp.array(d['utrain']), jnp.array(d['vtrain'])
+    d = io.loadmat(train_set)#x坐标点，u原始变量的样本，v压力值样本
+    x_train, u_train, v_train, w_train = jnp.array(d['x']), jnp.array(d['utrain']), jnp.array(d['vtrain']), jnp.array(d['wtrain'])
 
     d = io.loadmat(test_set)
-    x_test, u_test, v_test = jnp.array(d['x']), jnp.array(d['utest']), jnp.array(d['vtest'])
+    x_test, u_test, v_test, w_test = jnp.array(d['x']), jnp.array(d['utest']), jnp.array(d['vtest']), jnp.array(d['wtest'])
 
     if Problem == "HPR":
         u_train = u_train.at[:,:,0].set(jnp.log(u_train[:,:,0]))
@@ -69,8 +69,11 @@ def infer_solution(inputs):
         u_test = u_test.at[:,:,0].set(jnp.log(u_test[:,:,0]))
         u_test = u_test.at[:,:,2].set(jnp.log(u_test[:,:,2]))
 
-    Xmin = np.min(v_train)
-    Xmax = np.max(v_train)
+    Xmin1 = np.min(v_train)#pl上下界
+    Xmax1 = np.max(v_train)
+
+    Xmin2 = np.min(w_train)#rhol上下界
+    Xmax2 = np.max(w_train)
 
     dmin = np.zeros((1,1,3))
     dmax = np.zeros((1,1,3))
@@ -94,14 +97,16 @@ def infer_solution(inputs):
         u_train = (u_train - dmin)/(dmax - dmin)
         u_test = (u_test- dmin)/(dmax - dmin)
         tol = (fac-dmin)/(dmax - dmin)
-        v_train = (v_train - Xmin)/(Xmax - Xmin) 
-        v_test = (v_test- Xmin)/(Xmax - Xmin) 
+        v_train = (v_train - Xmin1)/(Xmax1 - Xmin1) 
+        v_test = (v_test- Xmin1)/(Xmax1 - Xmin1) 
+        w_train = (w_train - Xmin2)/(Xmax2 - Xmin2)
+        w_test = (w_test - Xmin2)/(Xmax2 - Xmin2)
     else:
         u_train = 2*(u_train - dmin)/(dmax - dmin) - oness
         u_test = 2*(u_test- dmin)/(dmax - dmin) - oness
         tol = 2*(fac-dmin)/(dmax - dmin) - oness
-        v_train = 2.*(v_train - Xmin)/(Xmax - Xmin) - 1.0
-        v_test = 2.*(v_test- Xmin)/(Xmax - Xmin) - 1.0
+        v_train = 2.*(v_train - Xmin1)/(Xmax1 - Xmin1) - 1.0
+        v_test = 2.*(v_test- Xmin1)/(Xmax1 - Xmin1) - 1.0
 
     def load_model(filename):
         with open(filename, 'rb') as file:
@@ -129,7 +134,7 @@ def infer_solution(inputs):
 
     def predictT(params, data):
         Am, W_trunk, b_trunk,a_trunk, c_trunk,a1_trunk, F1_trunk, c1_trunk = params
-        v, x = data
+        v, w, x = data
         Am = jnp.reshape(Am,(-1,G_dim,3))
         u_out_trunk = fnn_T(x, W_trunk, b_trunk, a_trunk, c_trunk, a1_trunk, F1_trunk , c1_trunk)
         u_pred = jnp.einsum('imn,jm->ijn',Am, u_out_trunk) # matmul
@@ -160,15 +165,20 @@ def infer_solution(inputs):
             model.append(f[i][minimum])
         return model
     foldert = './'+foldert+'/'
-    modelt = choose_trunk_model(foldert,[v_train, x_train],u_train, tol)
+    modelt = choose_trunk_model(foldert,[v_train, w_train, x_train],u_train, tol)
     print("modelt=\t",modelt)
 
     def predict(paramsb,paramst,Rinv, data, tol):
         Am, W_trunk, b_trunk,a_trunk, c_trunk,a1_trunk, F1_trunk, c1_trunk = paramst
-        W_branch,b_branch,a_branch, c_branch, a1_branch, F1_branch , c1_branch = paramsb
-        v, x = data
-        u_out_branch = fnn_B(v, W_branch, b_branch,a_branch, c_branch, a1_branch, F1_branch , c1_branch)
-        u_out_branch = jnp.reshape(u_out_branch,(-1,G_dim,3))
+        paramsb1, paramsb2 = paramsb
+        W_branch,b_branch,a_branch, c_branch, a1_branch, F1_branch , c1_branch = paramsb1
+        W_branch2,b_branch2,a_branch2, c_branch2, a1_branch2, F1_branch2 , c1_branch2 = paramsb2
+        v, w, x = data
+        u_out_branch1 = fnn_B(v, W_branch, b_branch,a_branch, c_branch, a1_branch, F1_branch , c1_branch)
+        u_out_branch1 = jnp.reshape(u_out_branch1,(-1,G_dim,3))
+        u_out_branch2 = fnn_B(w, W_branch2, b_branch2,a_branch2, c_branch2, a1_branch2, F1_branch2 , c1_branch2)
+        u_out_branch2 = jnp.reshape(u_out_branch2,(-1,G_dim,3))
+        u_out_branch = u_out_branch1 * u_out_branch2
         u_out_trunk = fnn_T(x, W_trunk, b_trunk,a_trunk, c_trunk, a1_trunk, F1_trunk , c1_trunk) # predict on trunk
         u_out_trunk = jnp.einsum('jm,mi->ji',u_out_trunk,Rinv )#T*R^-1
         u_pred = jnp.einsum('imn,jm->ijn',u_out_branch, u_out_trunk) # matmul
@@ -215,7 +225,7 @@ def infer_solution(inputs):
         temp = jnp.linalg.inv(R[i])
         Rinv.append(temp)#可训练参数
 
-    modelb,l2norm = choose_branch_model(folderb,paramst,Rinv,[v_test,x_test],u_test, tol)
+    modelb,l2norm = choose_branch_model(folderb,paramst,Rinv,[v_test, w_test, x_test],u_test, tol)
     print("modelb=\t",modelb)
 
     paramst = []
@@ -233,7 +243,7 @@ def infer_solution(inputs):
 
     pred = []
     for i in range(nt):
-        temp = predict(paramsb[i],paramst[i], Rinv[i] ,[v_train, x_train],tol)
+        temp = predict(paramsb[i],paramst[i], Rinv[i] ,[v_train, w_train, x_train],tol)
         pred.append(temp)
 
     pred = jnp.array(pred)
@@ -241,7 +251,7 @@ def infer_solution(inputs):
 
     pred_test = []
     for i in range(nt):
-        temp = predict(paramsb[i],paramst[i], Rinv[i] ,[v_test, x_test],tol)
+        temp = predict(paramsb[i],paramst[i], Rinv[i] ,[v_test, w_test, x_test],tol)
         pred_test.append(temp)
 
     pred_test = jnp.array(pred_test)
@@ -256,13 +266,15 @@ def infer_solution(inputs):
     if scaling=='01':
         u_train = (u_train)*(dmax-dmin)+dmin
         u_test = (u_test)*(dmax-dmin)+dmin
-        v_train = (v_train)*(Xmax - Xmin)+ Xmin
-        v_test = (v_test)*(Xmax - Xmin)+ Xmin
+        v_train = (v_train)*(Xmax1 - Xmin1)+ Xmin1
+        v_test = (v_test)*(Xmax1 - Xmin1)+ Xmin1
+        w_train = (w_train)*(Xmax2 - Xmin2)+ Xmin2
+        w_test = (w_test)*(Xmax2 - Xmin2)+ Xmin2
     else:
         u_train = (u_train+oness)*(dmax-dmin)/2.0+dmin
         u_test = (u_test+oness)*(dmax-dmin)/2.0+dmin
-        v_train = (v_train+1.0)*(Xmax-Xmin)/2.0+Xmin
-        v_test = (v_test+1.0)*(Xmax-Xmin)/2.0+Xmin
+        v_train = (v_train+1.0)*(Xmax1-Xmin1)/2.0+Xmin1
+        v_test = (v_test+1.0)*(Xmax1-Xmin1)/2.0+Xmin1
 
     if Problem== "HPR":
         u_train = u_train.at[:,:,0].set(jnp.exp(u_train[:,:,0]))#HPR的压力值太大需要对数化和指数化
@@ -392,32 +404,34 @@ def infer_solution(inputs):
     data_e = u_train[0:-1:100,:,0]
     data_std = pred_std[0:-1:100,:,0]
     label_dat=v_train[0:-1:100,0]
+    label_dat2=w_train[0:-1:100,0]
+
     # print(data_p.shape)
     label=[]
     temp = []
-    temp.append("exac(pl = "+str('{:.3e}'.format(label_dat[0]))+")")
-    temp.append("pred(pl = "+str('{:.3e}'.format(label_dat[0]))+")")
+    temp.append("exac(pl = "+str('{:.3e}'.format(label_dat[0]))+",rhol = "+ str('{:.3e}'.format(label_dat2[0])) +")")
+    temp.append("pred(pl = "+str('{:.3e}'.format(label_dat[0]))+",rhol = "+ str('{:.3e}'.format(label_dat2[0])) +")")
     temp.append("-k")
     temp.append("--b")
     label.append(temp)
 
     temp = []
-    temp.append("exac(pl = "+str('{:.3e}'.format(label_dat[1]))+")")
-    temp.append("pred(pl = "+str('{:.3e}'.format(label_dat[1]))+")")
+    temp.append("exac(pl = "+str('{:.3e}'.format(label_dat[1]))+",rhol = "+ str('{:.3e}'.format(label_dat2[1])) +")")
+    temp.append("pred(pl = "+str('{:.3e}'.format(label_dat[1]))+",rhol = "+ str('{:.3e}'.format(label_dat2[1])) +")")
     temp.append("-k")
     temp.append("--r")
     label.append(temp)
 
     temp = []
-    temp.append("exac(pl = "+str('{:.3e}'.format(label_dat[2]))+")")
-    temp.append("pred(pl = "+str('{:.3e}'.format(label_dat[2]))+")")
+    temp.append("exac(pl = "+str('{:.3e}'.format(label_dat[2]))+",rhol = "+ str('{:.3e}'.format(label_dat2[2])) +")")
+    temp.append("pred(pl = "+str('{:.3e}'.format(label_dat[2]))+",rhol = "+ str('{:.3e}'.format(label_dat2[2])) +")")
     temp.append("-k")
     temp.append("--g")
     label.append(temp)
 
     temp = []
-    temp.append("exac(pl = "+str('{:.3e}'.format(label_dat[3]))+")")
-    temp.append("pred(pl = "+str('{:.3e}'.format(label_dat[3]))+")")
+    temp.append("exac(pl = "+str('{:.3e}'.format(label_dat[3]))+",rhol = "+ str('{:.3e}'.format(label_dat2[3])) +")")
+    temp.append("pred(pl = "+str('{:.3e}'.format(label_dat[3]))+",rhol = "+ str('{:.3e}'.format(label_dat2[3])) +")")
     temp.append("-k")
     temp.append("--m")
 

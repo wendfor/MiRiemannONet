@@ -8,6 +8,7 @@ import pickle
 from jax import grad, jit, vmap, value_and_grad
 from jax import random
 from jax.example_libraries import optimizers
+from functools import partial
 
 def train_trunknet(inputs):
     num_epochs = inputs['Epochs']['Trunk']+1
@@ -39,10 +40,10 @@ def train_trunknet(inputs):
             test_set= "../data/low_pressure_ratio/testing_dataset.mat"
 
     d = io.loadmat(train_set)#x坐标点，u原始变量的样本，v压力值样本
-    x_train, u_train, v_train = jnp.array(d['x']), jnp.array(d['utrain']), jnp.array(d['vtrain'])
+    x_train, u_train, v_train, w_train = jnp.array(d['x']), jnp.array(d['utrain']), jnp.array(d['vtrain']), jnp.array(d['wtrain'])
 
     d = io.loadmat(test_set)
-    x_test, u_test, v_test = jnp.array(d['x']), jnp.array(d['utest']), jnp.array(d['vtest'])
+    x_test, u_test, v_test, w_test = jnp.array(d['x']), jnp.array(d['utest']), jnp.array(d['vtest']), jnp.array(d['wtest'])
 
     if Problem == "HPR":
         u_train = u_train.at[:,:,0].set(jnp.log(u_train[:,:,0]))
@@ -59,8 +60,13 @@ def train_trunknet(inputs):
     print("u_test",u_test.shape)
 
 
-    Xmin = np.min(v_train)#pl上下界
-    Xmax = np.max(v_train)
+    Xmin1 = np.min(v_train)#pl上下界
+    Xmax1 = np.max(v_train)
+
+    Xmin2 = np.min(w_train)#rhol上下界
+    Xmax2 = np.max(w_train)
+
+
 
     dmin = np.zeros((1,1,3))
     dmax = np.zeros((1,1,3))
@@ -79,14 +85,17 @@ def train_trunknet(inputs):
         u_train = (u_train - dmin)/(dmax - dmin)
         u_test = (u_test- dmin)/(dmax - dmin)
         tol = (fac-dmin)/(dmax - dmin)
-        v_train = (v_train - Xmin)/(Xmax - Xmin) 
-        v_test = (v_test- Xmin)/(Xmax - Xmin) 
+        v_train = (v_train - Xmin1)/(Xmax1 - Xmin1) 
+        v_test = (v_test- Xmin1)/(Xmax1 - Xmin1) 
+        w_train = (w_train - Xmin2)/(Xmax2 - Xmin2)
+        w_test = (w_test - Xmin2)/(Xmax2 - Xmin2)
+
     else:#映射到[-1,1]
         u_train = 2*(u_train - dmin)/(dmax - dmin) - oness
         u_test = 2*(u_test- dmin)/(dmax - dmin) - oness
         tol = 2*(fac-dmin)/(dmax - dmin) - oness
-        v_train = 2.*(v_train - Xmin)/(Xmax - Xmin) - 1.0
-        v_test = 2.*(v_test- Xmin)/(Xmax - Xmin) - 1.0
+        v_train = 2.*(v_train - Xmin1)/(Xmax1 - Xmin1) - 1.0
+        v_test = 2.*(v_test- Xmin1)/(Xmax1 - Xmin1) - 1.0
 
 
     def save_model(param,n,k):
@@ -96,9 +105,10 @@ def train_trunknet(inputs):
 
 
     initializer = jax.nn.initializers.glorot_normal()#神经网络参数初始化器
+    L = len(layers_x)
+
 
     def hyper_initial_WB(layers,key):#权重偏置参数初始化
-        L = len(layers)
         W = []
         b = []
         for l in range(1, L):
@@ -150,11 +160,10 @@ def train_trunknet(inputs):
             c1.append(hyper_parameters_amplitude([1]))
 
         return a, c, a1, F1, c1 
-
+    
     def fnn_T(X, W, b, a, c, a1, F1, c1):#前向传播
         inputs = X#2.*(X - Xmin)/(Xmax - Xmin) - 1.0
         # print("T first input=\t",inputs.shape)
-        L = len(W)
         for i in range(L-1):
             inputs = Basefunc(jnp.add(10*a[i]*jnp.add(jnp.dot(inputs, W[i]), b[i]),c[i])) \
                 + 10*a1[i]*jnp.sin(jnp.add(10*F1[i]*jnp.add(jnp.dot(inputs, W[i]), b[i]),c1[i])) 
@@ -184,13 +193,12 @@ def train_trunknet(inputs):
         b_trunk.append(b1)
         Am.append(A)
 
-
     def predict(params, data, tol):
         Am, W_trunk, b_trunk,a_trunk, c_trunk,a1_trunk, F1_trunk, c1_trunk = params
         v, x = data
-        Am = jnp.reshape(Am,(-1,G_dim,3))
+        Bm = jnp.reshape(Am,(-1,G_dim,3))
         u_out_trunk = fnn_T(x, W_trunk, b_trunk, a_trunk, c_trunk, a1_trunk, F1_trunk , c1_trunk)
-        u_pred = jnp.einsum('imn,jm->ijn',Am, u_out_trunk) # matmul
+        u_pred = jnp.einsum('imn,jm->ijn',Bm, u_out_trunk) # matmul
 
         return u_pred
 
@@ -258,41 +266,41 @@ def train_trunknet(inputs):
     with open(filename, 'wb') as file:
         pickle.dump((epo,train_loss), file)
 
-    pred = predict(params[0], [v_train, x_train], tol)
-    if scaling=='01':
-        pred = (pred)*(dmax-dmin)+dmin
-    else:
-        pred = (pred+oness)*(dmax-dmin)/2.0+dmin
+    # pred = predict(params[0], [v_train, x_train], tol)
+    # if scaling=='01':
+    #     pred = (pred)*(dmax-dmin)+dmin
+    # else:
+    #     pred = (pred+oness)*(dmax-dmin)/2.0+dmin
 
-    for i in range(1,nt):  
-        pred1 = predict(params[i], [v_train, x_train], tol)
-        if scaling=='01':
-            pred1 = (pred1)*(dmax-dmin)+dmin
-        else:
-            pred1 = (pred1+oness)*(dmax-dmin)/2.0+dmin
-        pred += pred1
-    pred = pred/float(nt)
+    # for i in range(1,nt):  
+    #     pred1 = predict(params[i], [v_train, x_train], tol)
+    #     if scaling=='01':
+    #         pred1 = (pred1)*(dmax-dmin)+dmin
+    #     else:
+    #         pred1 = (pred1+oness)*(dmax-dmin)/2.0+dmin
+    #     pred += pred1
+    # pred = pred/float(nt)
 
-    pred1 = predict(params[0], [v_train, x_train], tol)
-    if scaling=='01':
-        pred1 = (pred1)*(dmax-dmin)+dmin
-    else:
-        pred1 = (pred1+oness)*(dmax-dmin)/2.0+dmin
-    std = (pred1-pred)**2.0
-    for i in range(1,nt): 
-        pred1 = predict(params[i], [v_train, x_train], tol)
-        if scaling=='01':
-            pred1 = (pred1)*(dmax-dmin)+dmin
-        else:
-            pred1 = (pred1+oness)*(dmax-dmin)/2.0+dmin
-        std += (pred1-pred)**2.0
+    # pred1 = predict(params[0], [v_train, x_train], tol)
+    # if scaling=='01':
+    #     pred1 = (pred1)*(dmax-dmin)+dmin
+    # else:
+    #     pred1 = (pred1+oness)*(dmax-dmin)/2.0+dmin
+    # std = (pred1-pred)**2.0
+    # for i in range(1,nt): 
+    #     pred1 = predict(params[i], [v_train, x_train], tol)
+    #     if scaling=='01':
+    #         pred1 = (pred1)*(dmax-dmin)+dmin
+    #     else:
+    #         pred1 = (pred1+oness)*(dmax-dmin)/2.0+dmin
+    #     std += (pred1-pred)**2.0
 
-    std = np.sqrt(std/float(nt))
+    # std = np.sqrt(std/float(nt))
 
-    if scaling=='01':#数据还原
-        u_train = (u_train)*(dmax-dmin)+dmin
-        u_test = (u_test)*(dmax-dmin)+dmin
-    else:
-        u_train = (u_train+oness)*(dmax-dmin)/2.0+dmin
-        u_test = (u_test+oness)*(dmax-dmin)/2.0+dmin
+    # if scaling=='01':#数据还原
+    #     u_train = (u_train)*(dmax-dmin)+dmin
+    #     u_test = (u_test)*(dmax-dmin)+dmin
+    # else:
+    #     u_train = (u_train+oness)*(dmax-dmin)/2.0+dmin
+    #     u_test = (u_test+oness)*(dmax-dmin)/2.0+dmin
 
